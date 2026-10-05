@@ -1,0 +1,12 @@
+{
+  "mistake_rate_param": 0.065,
+  "n_proposals": 3000,
+  "n_seeded_mistakes": 208,
+  "n_flagged_by_oracle": 208,
+  "pct_flagged_by_oracle": 6.93,
+  "true_positive": 208,
+  "false_negative": 0,
+  "false_positive": 0,
+  "disagreements_missing_a_reason": 0,
+  "every_flagged_pending_entry_surfaces_its_reason_to_the_approver": true
+}

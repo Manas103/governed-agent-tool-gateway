@@ -1,0 +1,20 @@
+{
+  "n_cases": 1200,
+  "refused": 1200,
+  "reached_queue_or_executed": 0,
+  "pending_approvals_after_run": 0,
+  "by_shape": {
+    "adversarial:wrong-group": {
+      "total": 533,
+      "refused": 533
+    },
+    "adversarial:read-only-group-write-attempt": {
+      "total": 267,
+      "refused": 267
+    },
+    "adversarial:expired-token": {
+      "total": 400,
+      "refused": 400
+    }
+  }
+}

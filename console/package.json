@@ -1,0 +1,16 @@
+{
+  "name": "governed-agent-tool-gateway-console",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Typed client and CLI approval console for the governed agent tool gateway's HTTP API.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "approvals": "node dist/approvalConsole.js"
+  },
+  "devDependencies": {
+    "typescript": "5.6.3",
+    "@types/node": "22.10.1"
+  }
+}

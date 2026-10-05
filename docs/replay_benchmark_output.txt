@@ -1,0 +1,9 @@
+{
+  "n_calls": 4000,
+  "reads": 1333,
+  "writes_approved": 2667,
+  "approval_log_rows": 2667,
+  "state_reconstructed_from_log_matches_live_state": true,
+  "mismatched_tables": [],
+  "unapproved_writes_executed": 0
+}
