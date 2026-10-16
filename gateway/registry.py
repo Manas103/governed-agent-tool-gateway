@@ -6,7 +6,7 @@
 # splitting its own tool servers by domain.
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 
 @dataclass(frozen=True)
@@ -16,6 +16,12 @@ class ToolSpec:
     mutating: bool
     permitted_groups: frozenset[str]
     required_params: tuple[str, ...]
+    # Harvey extension (Oct. 2026): the tag set a trajectory policy decides on. Every tool
+    # must carry at least one tag ("none" for a tool with no special property) so a tool
+    # that was never classified is structurally distinguishable from one classified as
+    # harmless; gateway/policy.py denies by default when this set is empty, which is what
+    # "denies when ... an annotation is missing" means in practice.
+    annotations: frozenset[str] = frozenset()
 
 
 # Every group that can hold a short-lived token, the domains it may call into, and whether
@@ -84,6 +90,26 @@ def _write_groups_for_domain(domain: str) -> frozenset[str]:
     return frozenset(g for g, spec in GROUPS.items() if spec["can_write"] and domain in spec["domains"])
 
 
+# Harvey extension: the trajectory policy's only vocabulary. get_user/search_users return
+# user PII (email) to the caller, so a call afterward that can send data outside the
+# system is the exact shape a trajectory-aware policy exists to catch. report_pin is
+# repurposed, not newly invented, as this registry's one "sends something outside the
+# direct user-facing surface" tool: reporting a pin forwards the pin reference and reason
+# to Pinterest's external/third-party trust-and-safety review tooling, a real send of
+# data to a destination the calling group does not control, which is the same shape as
+# the "private-read-then-external-send" pattern the resume claims, without adding a new
+# tool or domain that would change this project's existing "4 domains, 24 tools" numbers.
+# Every other tool gets "none": explicitly classified as neither, not merely unlabeled, so
+# a ToolSpec built without going through this map (annotations=frozenset(), tested
+# directly in tests/test_policy.py) is what exercises the "missing annotation" fail-closed
+# path, never a real catalog entry.
+_ANNOTATIONS: dict[str, frozenset[str]] = {
+    "get_user": frozenset({"private_read"}),
+    "search_users": frozenset({"private_read"}),
+    "report_pin": frozenset({"external_send"}),
+}
+
+
 class Registry:
     """The approved-server-and-tool source of truth the gateway consults on every call."""
 
@@ -91,6 +117,7 @@ class Registry:
         self.tools: dict[str, ToolSpec] = {}
         for domain in DOMAIN_SERVERS:
             for spec in _tools_for_domain(domain, _write_groups_for_domain(domain)):
+                spec = replace(spec, annotations=_ANNOTATIONS.get(spec.name, frozenset({"none"})))
                 self.tools[spec.name] = spec
 
     def resolve(self, tool_name: str) -> ToolSpec:

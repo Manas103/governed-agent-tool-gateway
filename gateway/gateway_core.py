@@ -15,10 +15,17 @@ from .auth import TokenError, TokenIssuer, TokenPayload
 from .oracle import check_action
 from .registry import GROUPS, Registry
 from .state import AdCampaign, Board, Pin, User
+from .trajectory import TrajectoryPolicy
 
 
 class AuthorizationError(Exception):
     pass
+
+
+class TrajectoryPolicyError(Exception):
+    """Raised by Gateway.call() when a session_id is supplied and the trajectory policy
+    denies the call; distinct from AuthorizationError because the underlying token/group
+    authorization for this exact call, taken alone, already succeeded."""
 
 
 @dataclass(frozen=True)
@@ -60,11 +67,22 @@ def _row_to_dict(row) -> dict | None:
 
 
 class Gateway:
-    def __init__(self, session: Session, registry: Registry, issuer: TokenIssuer, queue: ApprovalQueue) -> None:
+    def __init__(
+        self,
+        session: Session,
+        registry: Registry,
+        issuer: TokenIssuer,
+        queue: ApprovalQueue,
+        trajectory: TrajectoryPolicy | None = None,
+    ) -> None:
         self.session = session
         self.registry = registry
         self.issuer = issuer
         self.queue = queue
+        # Optional on purpose: every existing benchmark and test that does not pass
+        # session_id to call() never touches this, so the pre-extension 1,200/4,000/3,000
+        # numbers are unaffected by this layer existing at all.
+        self.trajectory = trajectory or TrajectoryPolicy()
 
     def authorize(self, token: str, tool_name: str) -> TokenPayload:
         try:
@@ -78,18 +96,31 @@ class Gateway:
             raise AuthorizationError(f"group {payload.group!r} is read-only, cannot call mutating tool {tool_name!r}")
         return payload
 
-    def call(self, token: str, tool_name: str, params: dict) -> ReadResult | ProposalResult:
+    def call(self, token: str, tool_name: str, params: dict, session_id: str | None = None) -> ReadResult | ProposalResult:
         spec = self.registry.resolve(tool_name)
         payload = self.authorize(token, tool_name)
         missing = [p for p in spec.required_params if p not in params]
         if missing:
             raise AuthorizationError(f"missing required params for {tool_name!r}: {missing}")
 
-        if not spec.mutating:
-            return ReadResult(tool=tool_name, data=_READERS[tool_name](self.session, params))
+        # Trajectory policy is a second, independent gate on top of authorize(): a call
+        # this session_id's caller is individually authorized for can still be denied here
+        # because of what else this session already did. decide_trajectory() never sees
+        # `params`, only `spec.name` and `spec.annotations`.
+        if session_id is not None:
+            decision = self.trajectory.check(session_id, spec)
+            if not decision.allow:
+                raise TrajectoryPolicyError(decision.reason)
 
-        verdict = check_action(self.session, tool_name, params)
-        entry: ApprovalEntry = self.queue.submit(
-            tool=tool_name, domain=spec.domain, caller_group=payload.group, params=params, oracle_verdict=verdict
-        )
-        return ProposalResult(tool=tool_name, approval_id=entry.approval_id, oracle_ok=verdict.ok, oracle_reason=verdict.reason)
+        if not spec.mutating:
+            result: ReadResult | ProposalResult = ReadResult(tool=tool_name, data=_READERS[tool_name](self.session, params))
+        else:
+            verdict = check_action(self.session, tool_name, params)
+            entry: ApprovalEntry = self.queue.submit(
+                tool=tool_name, domain=spec.domain, caller_group=payload.group, params=params, oracle_verdict=verdict
+            )
+            result = ProposalResult(tool=tool_name, approval_id=entry.approval_id, oracle_ok=verdict.ok, oracle_reason=verdict.reason)
+
+        if session_id is not None:
+            self.trajectory.record(session_id, spec)
+        return result

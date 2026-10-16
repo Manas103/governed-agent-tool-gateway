@@ -1,0 +1,69 @@
+Processing request of type ListToolsRequest
+Processing request of type ListToolsRequest
+{
+  "n_tools_pinned": 10,
+  "n_silent_changes_expected": 6,
+  "expected_drifted_tools": [
+    "get_campaign",
+    "get_user",
+    "report_pin",
+    "search_users",
+    "suspend_user",
+    "update_user_email"
+  ],
+  "detected_drifted_tools": [
+    "get_campaign",
+    "get_user",
+    "report_pin",
+    "search_users",
+    "suspend_user",
+    "update_user_email"
+  ],
+  "n_detected": 6,
+  "all_expected_caught": true,
+  "n_false_positives": 0,
+  "unchanged_tools_confirmed_clean": [
+    "get_board",
+    "get_pin",
+    "list_campaigns",
+    "search_pins"
+  ],
+  "drift_detail": [
+    {
+      "tool": "get_campaign",
+      "kind": "schema_changed",
+      "pinned_fingerprint": "0834e40d1eb5eadec613de5bd9db20ab26abc081d9892eb7a6d8d20a8c8e092c",
+      "current_fingerprint": "de306d61c01f4cfb7fa7a96a83cc27086fa9133da605ccb2ed70261f7ee383d2"
+    },
+    {
+      "tool": "get_user",
+      "kind": "schema_changed",
+      "pinned_fingerprint": "7d3f7c0b6ce43cb86bafa02abd56d376e57d690812da90848a3dc0110d370ab5",
+      "current_fingerprint": "5a0c2543ad96839aaf6ce38eca53af3923d5e012cc4901461c3cad03fd6ad200"
+    },
+    {
+      "tool": "search_users",
+      "kind": "schema_changed",
+      "pinned_fingerprint": "acd01c8f3cac2138cfe52cfb487a085e59a259aec201852c8932d8896af9d7b0",
+      "current_fingerprint": "d8262d8b0cd80cfecebc9fecb271fdb5ab7c1f72906594960965ce557b8c88a6"
+    },
+    {
+      "tool": "report_pin",
+      "kind": "schema_changed",
+      "pinned_fingerprint": "38905d3411da48034318657e0aee121a9e693f242a81941e030503257ac142fa",
+      "current_fingerprint": "547b2e4f8f174759391ddccf90d030f12aac07d65c9caa922aeed712765db785"
+    },
+    {
+      "tool": "update_user_email",
+      "kind": "schema_changed",
+      "pinned_fingerprint": "60027a1d4b968e6768cfd2e89c1ffa2d71d6bc3e3a98e2249ab62521a06195c2",
+      "current_fingerprint": "72fa8369ad77531f629fa15d11d0e8f67005d29ccc6bccf50137145486895723"
+    },
+    {
+      "tool": "suspend_user",
+      "kind": "schema_changed",
+      "pinned_fingerprint": "e808c17ff0b41b20da6d4bfd2e62a8bcf8dc4601e3b6f6eb48f842bced9a9fbb",
+      "current_fingerprint": "59fd7de3906e07d428aeaf9895160f0fa2fcc046d2dcf176e6cdb35d9a8dc891"
+    }
+  ]
+}

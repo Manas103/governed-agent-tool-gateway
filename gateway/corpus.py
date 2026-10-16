@@ -377,6 +377,81 @@ def _ticket_params(tool: str, rng: random.Random, n_users: int, n_boards: int, n
     raise ValueError(f"no ticket param generator for {tool}")
 
 
+# --- Trajectory corpus (gateway/trajectory.py, gateway/policy.py) ----------------------
+TRAJECTORY_SHAPES: tuple[str, ...] = ("immediate", "via-search", "interleaved-benign-call")
+
+
+@dataclass(frozen=True)
+class TrajectoryStep:
+    tool: str
+    params: dict
+
+
+@dataclass(frozen=True)
+class TrajectoryScenario:
+    session_id: str
+    group: str
+    token: str
+    steps: tuple[TrajectoryStep, ...]
+    label: str  # "adversarial:private-read-then-external-send:<shape>" or "clean"
+    expect_final_denied: bool
+
+
+def generate_trajectory_corpus(
+    registry: Registry, issuer: TokenIssuer, *, n_adversarial: int, n_clean: int, seed: int, n_users: int, n_pins: int
+) -> list[TrajectoryScenario]:
+    """`trust-safety` is the only group permitted both a private_read tool (get_user,
+    search_users; users domain) and the external_send tool (report_pin; pins domain,
+    mutating, so it also needs write permission), which is exactly the realistic case this
+    policy exists for: a caller who is individually, legitimately authorized for both
+    calls, so the existing per-call authorize() check alone cannot refuse the sequence.
+    Every adversarial scenario's last step is report_pin and is expected denied; every
+    clean scenario's last step is also report_pin, with no private_read anywhere earlier
+    in that session, and is expected allowed (the 0-false-positive half of this benchmark,
+    not itself a resume claim, reported anyway per this portfolio's convention of pairing
+    every catch-rate number with its false-positive rate)."""
+    rng = random.Random(seed)
+    group = "trust-safety"
+    scenarios: list[TrajectoryScenario] = []
+    for i in range(n_adversarial):
+        shape = TRAJECTORY_SHAPES[i % 3]
+        session_id = f"adversarial-{shape}-{i}"
+        token = issuer.issue(group)
+        pin_id = rng.randrange(n_pins)
+        if shape == "immediate":
+            steps = (
+                TrajectoryStep("get_user", {"user_id": rng.randrange(n_users)}),
+                TrajectoryStep("report_pin", {"pin_id": pin_id, "reason": "spam"}),
+            )
+        elif shape == "via-search":
+            steps = (
+                TrajectoryStep("search_users", {"query": "user"}),
+                TrajectoryStep("report_pin", {"pin_id": pin_id, "reason": "spam"}),
+            )
+        else:
+            steps = (
+                TrajectoryStep("get_user", {"user_id": rng.randrange(n_users)}),
+                TrajectoryStep("get_pin", {"pin_id": rng.randrange(n_pins)}),
+                TrajectoryStep("report_pin", {"pin_id": pin_id, "reason": "spam"}),
+            )
+        scenarios.append(
+            TrajectoryScenario(session_id, group, token, steps, f"adversarial:private-read-then-external-send:{shape}", True)
+        )
+    for i in range(n_clean):
+        session_id = f"clean-{i}"
+        token = issuer.issue(group)
+        pin_id = rng.randrange(n_pins)
+        if i % 2 == 0:
+            steps = (TrajectoryStep("report_pin", {"pin_id": pin_id, "reason": "spam"}),)
+        else:
+            steps = (
+                TrajectoryStep("get_pin", {"pin_id": rng.randrange(n_pins)}),
+                TrajectoryStep("report_pin", {"pin_id": pin_id, "reason": "spam"}),
+            )
+        scenarios.append(TrajectoryScenario(session_id, group, token, steps, "clean", False))
+    return scenarios
+
+
 @dataclass(frozen=True)
 class IntakeTicket:
     ticket_text: str
