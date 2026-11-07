@@ -16,6 +16,7 @@ from .oracle import check_action
 from .registry import GROUPS, Registry
 from .state import AdCampaign, Board, Pin, User
 from .trajectory import TrajectoryPolicy
+from .usage import QuotaExceededError, UsageMeter, request_text
 
 
 class AuthorizationError(Exception):
@@ -74,6 +75,7 @@ class Gateway:
         issuer: TokenIssuer,
         queue: ApprovalQueue,
         trajectory: TrajectoryPolicy | None = None,
+        usage_meter: UsageMeter | None = None,
     ) -> None:
         self.session = session
         self.registry = registry
@@ -83,6 +85,9 @@ class Gateway:
         # session_id to call() never touches this, so the pre-extension 1,200/4,000/3,000
         # numbers are unaffected by this layer existing at all.
         self.trajectory = trajectory or TrajectoryPolicy()
+        # Also optional, and for the same reason: no call site that omits usage_meter or
+        # task_description touches quotas or chargeback at all.
+        self.usage_meter = usage_meter
 
     def authorize(self, token: str, tool_name: str) -> TokenPayload:
         try:
@@ -96,12 +101,26 @@ class Gateway:
             raise AuthorizationError(f"group {payload.group!r} is read-only, cannot call mutating tool {tool_name!r}")
         return payload
 
-    def call(self, token: str, tool_name: str, params: dict, session_id: str | None = None) -> ReadResult | ProposalResult:
+    def call(
+        self,
+        token: str,
+        tool_name: str,
+        params: dict,
+        session_id: str | None = None,
+        task_description: str | None = None,
+    ) -> ReadResult | ProposalResult:
         spec = self.registry.resolve(tool_name)
         payload = self.authorize(token, tool_name)
         missing = [p for p in spec.required_params if p not in params]
         if missing:
             raise AuthorizationError(f"missing required params for {tool_name!r}: {missing}")
+
+        # Usage metering is a second, independent gate layered the same way the trajectory
+        # policy is: it only runs when both a meter and a task_description were supplied,
+        # and it runs after authorize() so an unauthorized caller never consumes quota.
+        if self.usage_meter is not None and task_description is not None:
+            text = request_text(task_description, tool_name, params)
+            self.usage_meter.record(group=payload.group, tool=tool_name, domain=spec.domain, text=text)
 
         # Trajectory policy is a second, independent gate on top of authorize(): a call
         # this session_id's caller is individually authorized for can still be denied here

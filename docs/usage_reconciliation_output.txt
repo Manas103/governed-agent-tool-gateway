@@ -1,0 +1,47 @@
+{
+  "n_calls": 4000,
+  "served": 4000,
+  "denied_over_quota": 0,
+  "reconciliation": [
+    {
+      "group": "catalog-ops",
+      "n_events": 1005,
+      "fast_cost_usd": 0.54417,
+      "provider_cost_usd": 0.53091,
+      "relative_error": 0.024975984630163397,
+      "within_half_percent": false
+    },
+    {
+      "group": "ads-ops",
+      "n_events": 1046,
+      "fast_cost_usd": 0.525675,
+      "provider_cost_usd": 0.543225,
+      "relative_error": 0.032307055087670775,
+      "within_half_percent": false
+    },
+    {
+      "group": "trust-safety",
+      "n_events": 987,
+      "fast_cost_usd": 0.48468,
+      "provider_cost_usd": 0.485505,
+      "relative_error": 0.0016992615935983455,
+      "within_half_percent": true
+    },
+    {
+      "group": "growth-analytics",
+      "n_events": 962,
+      "fast_cost_usd": 0.510045,
+      "provider_cost_usd": 0.509985,
+      "relative_error": 0.00011765051913281563,
+      "within_half_percent": true
+    }
+  ],
+  "all_groups_within_half_percent": false,
+  "quota_enforcement_demo": {
+    "group": "growth-analytics",
+    "quota_tokens": 500,
+    "accepted": 14,
+    "denied": 186,
+    "usage_ever_exceeded_quota": false
+  }
+}

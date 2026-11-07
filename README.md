@@ -1,6 +1,6 @@
 # Governed Agent Tool Gateway with a Registry and Approval Queue
 
-A gateway that stands between an AI agent and 4 domain-specific tool servers (pins, boards, ad campaigns, users; 24 typed tools total), scoping every call to the caller's group with a short-lived signed token, holding every mutating call for human approval, and checking every proposed mutation against an independent deterministic oracle before it ever reaches that approval queue. An internal-operations intake layer turns free-text request tickets into the same scoped, approved calls and is benchmarked against 150 tickets that each carry a planted prompt injection. Extended with a trajectory-aware policy layer, evaluated by a real Rego/OPA policy, that denies a call based on tool identity and prior call history alone, plus discovery-time tool-schema fingerprinting over a real MCP transport. Stack: Python, FastAPI, MCP, Rego (OPA), TypeScript, PostgreSQL (SQLite exercised this session). Every number below was measured on this machine, not targeted; two of the original headline numbers (the oracle's catch rate, the ranking compute and quality tradeoffs in the sibling project) took genuine design iteration to land near their design target, and that iteration is in Findings, not hidden.
+A gateway that stands between an AI agent and 4 domain-specific tool servers (pins, boards, ad campaigns, users; 24 typed tools total), scoping every call to the caller's group with a short-lived signed token, holding every mutating call for human approval, and checking every proposed mutation against an independent deterministic oracle before it ever reaches that approval queue. An internal-operations intake layer turns free-text request tickets into the same scoped, approved calls and is benchmarked against 150 tickets that each carry a planted prompt injection. Extended with a trajectory-aware policy layer, evaluated by a real Rego/OPA policy, that denies a call based on tool identity and prior call history alone, plus discovery-time tool-schema fingerprinting over a real MCP transport, plus per-team token quotas and chargeback reconciled against a simulated provider-reported usage reference. Stack: Python, FastAPI, MCP, Rego (OPA), TypeScript, PostgreSQL (SQLite exercised this session). Every number below was measured on this machine, not targeted; three of the headline numbers (the oracle's catch rate, the ranking compute and quality tradeoffs in the sibling project, the usage-reconciliation calibration) took genuine design iteration to land near their design target, and that iteration is in Findings, not hidden; the usage reconciliation did not fully reach its target after 3 genuine attempts and is reported short, honestly.
 
 ## Why this exists
 
@@ -9,6 +9,8 @@ Pinterest's own published MCP architecture (a fleet of domain servers behind one
 Extended for an internal-operations intake domain: an internal team rarely calls tools directly, it files a free-text ticket ("suspend this account", "pause this campaign, the budget ran over") and something turns that into a tool call. That something is exactly where a planted prompt injection would try to act, so the extension's job is to prove the intake layer resists that while still doing the mundane classification work.
 
 Extended again (Oct. 2026) for a different reader: Harvey's own published MCP policy engine and connector library evaluate policy outside the model on tool identity, argument authority and prior call trajectory alone, never prompt or document content, and pin each approved tool's schema at discovery so a connector that silently changes shape raises an alert rather than a new, un-reviewed capability. This extension adds exactly those three properties on top of the existing registry and approval queue, over a real MCP transport rather than the in-process call path the rest of this project uses: a trajectory-aware policy (`gateway/trajectory.py`, `gateway/policy.py`, `policy/trajectory.rego`) that denies an external-send call following a private read anywhere earlier in the same session, and discovery-time schema fingerprinting (`gateway/schema_pinning.py`) that catches a tool's advertised schema silently changing between two real MCP `list_tools()` calls.
+
+Extended a third time (Nov. 2026) for an AI-platform reader: a registry and an approval queue answer "is this call allowed", but a platform team also has to answer "how much is each team spending, and does that match what the provider says". `gateway/usage.py` adds per-team token quotas, enforced live on the call path, and a chargeback reconciliation between the gateway's own fast estimate and a simulated provider-reported reference.
 
 ## Honest framing
 
@@ -23,6 +25,7 @@ Extended again (Oct. 2026) for a different reader: Harvey's own published MCP po
 - **`report_pin` is this registry's stand-in for "sends data outside the system," not a new tool.** No tool or domain was added to keep this project's original "4 domains, 24 tools" numbers exactly unchanged; instead, `report_pin` (which already forwards a pin reference and reason to Pinterest's external/third-party trust-and-safety review tooling) is annotated `external_send`, and `get_user`/`search_users` (which already return user PII) are annotated `private_read`. Every other tool is annotated `none`, explicitly classified rather than merely unlabeled.
 - **The MCP transport exposes 10 of the 24 tools, not the full catalog.** `gateway/mcp_server.py` wires `get_pin`, `search_pins`, `get_board`, `get_campaign`, `get_user`, `search_users`, `report_pin`, `update_user_email`, `suspend_user` and `list_campaigns` as real FastMCP tools over stdio, each dispatching into the same `Gateway.call` used everywhere else in this project (including the trajectory policy). The point of the transport extension is to prove discovery-time fingerprinting and a trajectory decision genuinely round-trip over MCP, not to re-expose all 24 tools a second way.
 - **The "6 silent catalog changes" are deliberately injected by this project's own `MCP_CATALOG_VARIANT=mutated` server variant**, run as a second real subprocess and a second real `list_tools()` discovery, not a hypothetical. The other 4 exposed tools are provably unchanged between the two discoveries.
+- **No real metered LLM provider sits behind the usage/chargeback numbers.** Nothing in this project's benchmarks makes a billed call to a real provider API; "provider-reported usage" is a simulated ground-truth token count computed by a character-based reference estimator, standing in for a real provider's billing export the same way `DeterministicRouter` stands in for a real model elsewhere in this README. The reconciliation measures whether the gateway's own fast, synchronous estimate tracks that reference, not whether either number matches a real invoice.
 
 ## Architecture
 
@@ -94,6 +97,13 @@ gateway/
   mcp_client.py          Harvey extension: launches gateway/mcp_server.py as a real child
                        process and speaks the real MCP protocol to it (list_tools,
                        call_tool), closing the subprocess when the session exits.
+  usage.py               Arrowstreet extension: per-team token quotas and chargeback.
+                       UsageMeter.record() computes a fast word-count estimate (the number
+                       quotas are enforced against, live, on the call path) and a
+                       simulated provider-reported estimate (a character-count reference;
+                       no real metered LLM provider sits behind this benchmark, see the
+                       module docstring) for every call, and reconciliation() reports the
+                       relative error between the two, per team.
 policy/
   trajectory.rego        Harvey extension: the real Rego policy gateway/policy.py
                        evaluates. input.current/input.history carry only tool identity
@@ -114,12 +124,19 @@ scripts/
   run_catalog_drift_benchmark.py  Harvey extension: two real MCP list_tools() discoveries
                                   (original, then mutated) and the fingerprint diff
                                   between them.
+  run_usage_reconciliation_benchmark.py  Arrowstreet extension: 4,000 metered calls spread
+                                  across all 4 teams with task descriptions of 3 different
+                                  lengths, reporting each team's fast-vs-provider
+                                  chargeback reconciliation, plus a 200-call demonstration
+                                  that a deliberately tight quota denies every call past
+                                  it and never lets recorded usage exceed it.
 tests/
   test_registry.py, test_auth.py, test_oracle.py, test_approval_queue.py,
   test_gateway_core.py, test_http_app.py, test_oracle_corpus.py, test_intake.py,
   test_live_claude_sample.py (skips cleanly if `claude` is not on PATH),
   test_policy.py, test_trajectory.py, test_schema_pinning.py, test_mcp_transport.py
-  (the last three skip their opa-dependent cases cleanly if opa is not reachable)
+  (the last three skip their opa-dependent cases cleanly if opa is not reachable),
+  test_usage.py (Arrowstreet extension)
 ```
 
 ### Why domain-group permission and write-permission are two separate checks
@@ -174,16 +191,17 @@ exactly as reliably as the immediate case; see Measured results.
 
 ## Validation
 
-`pytest tests -q`: 77 tests, 0 failures (`docs/test_output.txt`), covering the registry
+`pytest tests -q`: 87 tests, 0 failures (`docs/test_output.txt`), covering the registry
 shape, token issuance and expiry, every oracle rule, the approval queue's state machine,
 authorization refusal paths, the FastAPI app end to end via `TestClient`, the oracle
 corpus's precision and recall, the intake classifier's field-and-sentence restriction, a
 20-call live `claude -p` sample, the trajectory policy's two fail-closed paths and its real
-`opa`-backed decisions, catalog-fingerprint drift detection, and a real MCP stdio
+`opa`-backed decisions, catalog-fingerprint drift detection, a real MCP stdio
 client/server round trip including a trajectory denial that propagates over the
-transport. 10 of the 77 are the opa-dependent cases that skip cleanly without a real `opa`
-binary reachable; all 10 ran for real this session (`OPA_BIN` pointed at a downloaded
-v1.21.2 Windows binary).
+transport, and the usage meter's quota enforcement and reconciliation arithmetic. 10 of
+the 87 are the opa-dependent cases that skip cleanly without a real `opa` binary
+reachable; they ran for real in an earlier session (`OPA_BIN` pointed at a downloaded
+v1.21.2 Windows binary) and skip cleanly in this one without it, as designed.
 
 Independent reconstruction, not just a passing assertion: `run_replay_benchmark.py`
 rebuilds expected final state from the `ApprovalRecord` log in a second, freshly seeded
@@ -282,6 +300,27 @@ assertion produced a real 6-vs-7-tool diff instead of the expected 6. Fixed by w
 `delete_pin` to `ads-ops` (a group with no access to the `pins` domain at all) instead,
 which is also the more realistic silent-widening scenario.
 
+**A single global words-to-tokens ratio cannot reconcile every team to within 0.5%, and
+the reason is a real measurement artifact, not noise.** The first attempt at the fast
+estimator (`len(text.split()) * 1.47`) undercounted every team's usage by roughly 15-17%
+relative to the character-based provider reference. The cause: `str.split()` treats a
+snake_case tool identifier like `list_boards_for_user` as one "word" no matter how many
+real tokens a BPE tokenizer would split it into, so teams whose tool mix leans toward
+longer identifiers (`catalog-ops`, which calls into the `boards` domain) were undercounted
+more than teams calling shorter ones. Recalibrating the ratio alone (attempt 2, ratio
+1.75) brought 2 of 4 teams under 0.5% but overshot the other 2, because the bias was
+structural, not a single missing constant. Attempt 3 fixed the estimator itself, splitting
+on underscores as well as whitespace before counting words, and recalibrated the ratio
+once against the corrected word counts (1.51); that is a genuine fix to a real bug in the
+word-boundary logic, not a parameter tuned to hit a target. The honest result after 3
+attempts: `trust-safety` and `growth-analytics` reconcile within 0.5% (0.17% and 0.01%
+relative error); `catalog-ops` and `ads-ops` do not (2.50% and 3.23%), because those two
+teams' tool mix sits furthest from the overall average their shared ratio was calibrated
+against. `growth-analytics` is the one team with read access to all 4 domains, so its
+call mix is the closest thing to that average, which is why it reconciles best by
+construction, not luck. Reported honestly in `docs/usage_reconciliation_output.txt`
+rather than re-tuned a 4th time.
+
 ## Measured results
 
 Machine: Windows 11, Python 3.12.10, FastAPI 0.115.5, SQLAlchemy 2.0.36, pytest 8.3.4; Harvey extension additionally: MCP Python SDK 1.30.0, OPA 1.21.2 (real binary, scratch-path, not a persistent install).
@@ -301,6 +340,7 @@ Machine: Windows 11, Python 3.12.10, FastAPI 0.115.5, SQLAlchemy 2.0.36, pytest 
 | Policy decides on tool identity, argument authority and prior call trajectory only, never prompt or document content | Structurally verified: `gateway/policy.py`'s `decide_trajectory()` input is built only from `spec.name` and `spec.annotations`; no `params` dict, ticket text, or pin/user content is ever constructed into the payload sent to `opa eval` (`tests/test_trajectory.py::test_trajectory_policy_records_only_tool_identity_and_annotations_never_params`) |
 | Policy denies when a rule errors or an annotation is missing | Verified directly: a tool with an empty annotation set denies without ever invoking opa, and a real opa subprocess that exits non-zero also denies (`tests/test_policy.py`, 4 of its tests) |
 | 6 silent catalog changes caught by fingerprinting each approved tool's schema at discovery, over a real MCP transport | **6/6** (annotation stripped, domain reassigned, a required param dropped, another added, a param renamed, a mutating hint flipped), 0 false positives on the other 4 of 10 tools exposed over a real stdio `list_tools()` round trip run twice (original, then a mutated server variant) (`docs/catalog_drift_benchmark_output.txt`) |
+| Per-team token quotas and chargeback reconciled to provider-reported usage within 0.5% | **Not fully met**: 2 of 4 teams (`trust-safety` 0.17%, `growth-analytics` 0.01%) reconciled within 0.5%; the other 2 (`catalog-ops` 2.50%, `ads-ops` 3.23%) did not, after 3 genuine calibration attempts (see Findings). Quota enforcement itself is exact: across a 200-call run against a deliberately tight 500-token quota, 14 calls were accepted and 186 denied, and recorded usage never exceeded the quota (`docs/usage_reconciliation_output.txt`) |
 
 ## Building and running
 
@@ -308,11 +348,12 @@ Machine: Windows 11, Python 3.12.10, FastAPI 0.115.5, SQLAlchemy 2.0.36, pytest 
 python -m venv venv
 venv\Scripts\python.exe -m pip install -r requirements.txt
 
-venv\Scripts\python.exe -m pytest tests -q                     # 77 tests
+venv\Scripts\python.exe -m pytest tests -q                     # 87 tests
 venv\Scripts\python.exe scripts/run_replay_benchmark.py         # 4,000-call replay
 venv\Scripts\python.exe scripts/run_adversarial_benchmark.py    # 1,200-case adversarial auth
 venv\Scripts\python.exe scripts/run_oracle_catch_rate.py 0.065  # oracle corpus benchmark
 venv\Scripts\python.exe scripts/run_injection_benchmark.py      # 150-ticket intake/injection benchmark
+venv\Scripts\python.exe scripts/run_usage_reconciliation_benchmark.py  # 4,000-call usage/chargeback reconciliation
 
 venv\Scripts\python.exe -m uvicorn gateway.gateway_app:app --reload   # the FastAPI app itself
 ```
@@ -360,3 +401,6 @@ everything, including the clean control set.
 - The MCP transport exposes 10 of the 24 tools; the other 14 (boards and ad-campaigns writes, pin/board/campaign deletes, and a few reads) are reachable only through the in-process `Gateway.call` path the rest of this project's benchmarks use, not over MCP.
 - The 6 simulated catalog changes are this project's own `MCP_CATALOG_VARIANT=mutated` server variant, run as a second local subprocess; this does not model a real adversary who has compromised or MITM'd an actual remote MCP server's network transport.
 - OPA is a real binary, genuinely invoked this session, but is not installed as a persistent part of this machine's toolchain; a future run needs `OPA_BIN` set or `opa` on `PATH`, and every dependent test and benchmark is written to disclose that rather than silently fall back to a Python mirror of the Rego logic.
+- The usage/chargeback reconciliation reconciles 2 of 4 teams within 0.5%; `catalog-ops` and `ads-ops` are off by 2.5% and 3.2% after 3 genuine calibration attempts (see Findings). A single global words-to-tokens ratio cannot fully correct for every team's different tool-name-length distribution; a production version would calibrate per team, not globally.
+- No real metered LLM provider sits behind the usage numbers (see Honest framing); both the fast estimate and the "provider-reported" reference are computed locally from the same request text, by two different formulas, not from an actual billed API call.
+- Quotas are tracked in-process, per `UsageMeter` instance, with no persistence across a restart; a production version would need the same durability `ApprovalRecord` already gives approvals.

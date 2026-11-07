@@ -17,6 +17,7 @@ from .auth import TokenIssuer
 from .gateway_core import AuthorizationError, Gateway, ProposalResult, ReadResult
 from .registry import GROUPS, Registry
 from .state import make_session_factory, seed_fixture_state
+from .usage import QuotaExceededError, UsageMeter
 
 
 class TokenRequest(BaseModel):
@@ -26,6 +27,7 @@ class TokenRequest(BaseModel):
 class CallRequest(BaseModel):
     token: str
     params: dict[str, Any] = {}
+    task_description: str | None = None
 
 
 class DecideRequest(BaseModel):
@@ -40,7 +42,8 @@ def build_app(*, database_url: str | None = None, secret: bytes = b"dev-secret-c
     registry = Registry()
     issuer = TokenIssuer(secret)
     queue = ApprovalQueue(session)
-    gateway = Gateway(session, registry, issuer, queue)
+    usage_meter = UsageMeter()
+    gateway = Gateway(session, registry, issuer, queue, usage_meter=usage_meter)
 
     app = FastAPI(title="Governed Agent Tool Gateway")
 
@@ -61,9 +64,11 @@ def build_app(*, database_url: str | None = None, secret: bytes = b"dev-secret-c
     @app.post("/tools/{tool_name}/call")
     def call_tool(tool_name: str, req: CallRequest) -> dict:
         try:
-            result = gateway.call(req.token, tool_name, req.params)
+            result = gateway.call(req.token, tool_name, req.params, task_description=req.task_description)
         except AuthorizationError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except QuotaExceededError as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         if isinstance(result, ReadResult):
@@ -103,6 +108,27 @@ def build_app(*, database_url: str | None = None, secret: bytes = b"dev-secret-c
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"approval_id": entry.approval_id, "decision": entry.decision.value}
+
+    @app.get("/usage/{group}")
+    def get_usage(group: str) -> dict:
+        if group not in GROUPS:
+            raise HTTPException(status_code=400, detail=f"unknown group: {group}")
+        return {"group": group, "quota": usage_meter.quota(group), "remaining": usage_meter.quota_remaining(group)}
+
+    @app.get("/usage/reconciliation")
+    def get_usage_reconciliation() -> dict:
+        return {
+            "rows": [
+                {
+                    "group": row.group,
+                    "fast_cost_usd": row.fast_cost_usd,
+                    "provider_cost_usd": row.provider_cost_usd,
+                    "relative_error": row.relative_error,
+                    "n_events": row.n_events,
+                }
+                for row in usage_meter.reconciliation()
+            ]
+        }
 
     return app
 
