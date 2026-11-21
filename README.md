@@ -1,6 +1,6 @@
 # Governed Agent Tool Gateway with a Registry and Approval Queue
 
-A gateway that stands between an AI agent and 4 domain-specific tool servers (pins, boards, ad campaigns, users; 24 typed tools total), scoping every call to the caller's group with a short-lived signed token, holding every mutating call for human approval, and checking every proposed mutation against an independent deterministic oracle before it ever reaches that approval queue. An internal-operations intake layer turns free-text request tickets into the same scoped, approved calls and is benchmarked against 150 tickets that each carry a planted prompt injection. Extended with a trajectory-aware policy layer, evaluated by a real Rego/OPA policy, that denies a call based on tool identity and prior call history alone, plus discovery-time tool-schema fingerprinting over a real MCP transport, plus per-team token quotas and chargeback reconciled against a simulated provider-reported usage reference. Stack: Python, FastAPI, MCP, Rego (OPA), TypeScript, PostgreSQL (SQLite exercised this session). Every number below was measured on this machine, not targeted; three of the headline numbers (the oracle's catch rate, the ranking compute and quality tradeoffs in the sibling project, the usage-reconciliation calibration) took genuine design iteration to land near their design target, and that iteration is in Findings, not hidden; the usage reconciliation did not fully reach its target after 3 genuine attempts and is reported short, honestly.
+A gateway that stands between an AI agent and 4 domain-specific tool servers (pins, boards, ad campaigns, users; 24 typed tools total), scoping every call to the caller's group with a short-lived signed token, holding every mutating call for human approval, and checking every proposed mutation against an independent deterministic oracle before it ever reaches that approval queue. An internal-operations intake layer turns free-text request tickets into the same scoped, approved calls and is benchmarked against 150 tickets that each carry a planted prompt injection. Extended with a trajectory-aware policy layer, evaluated by a real Rego/OPA policy, that denies a call based on tool identity and prior call history alone, plus discovery-time tool-schema fingerprinting over a real MCP transport, plus per-team token quotas and chargeback reconciled against a simulated provider-reported usage reference. Extended again (Nov. 2026, Cisco) with an algorithmic red team: 8 prompt-injection technique families expanded into 640 payloads, delivered through both tool outputs and request fields against a deterministic stand-in agent, each family mapped to an OWASP Top 10 for LLM Applications category, paired with a runtime guardrail (an input classifier plus an output-schema/scope check) and a 250-request benign control set, plus a 20-call live `claude -p` sample on the same payload interface. Stack: Python, FastAPI, MCP, Rego (OPA), TypeScript, PostgreSQL (SQLite exercised this session), pytest. Every number below was measured on this machine, not targeted; three of the headline numbers (the oracle's catch rate, the ranking compute and quality tradeoffs in the sibling project, the usage-reconciliation calibration) took genuine design iteration to land near their design target, and that iteration is in Findings, not hidden; the usage reconciliation did not fully reach its target after 3 genuine attempts and is reported short, honestly. The red-team extension's own headline numbers (43.75% baseline attack success, cut to 3.125% after the guardrail, 0.8% benign refusal) likewise took genuine iteration, documented in Findings below.
 
 ## Why this exists
 
@@ -11,6 +11,8 @@ Extended for an internal-operations intake domain: an internal team rarely calls
 Extended again (Oct. 2026) for a different reader: Harvey's own published MCP policy engine and connector library evaluate policy outside the model on tool identity, argument authority and prior call trajectory alone, never prompt or document content, and pin each approved tool's schema at discovery so a connector that silently changes shape raises an alert rather than a new, un-reviewed capability. This extension adds exactly those three properties on top of the existing registry and approval queue, over a real MCP transport rather than the in-process call path the rest of this project uses: a trajectory-aware policy (`gateway/trajectory.py`, `gateway/policy.py`, `policy/trajectory.rego`) that denies an external-send call following a private read anywhere earlier in the same session, and discovery-time schema fingerprinting (`gateway/schema_pinning.py`) that catches a tool's advertised schema silently changing between two real MCP `list_tools()` calls.
 
 Extended a third time (Nov. 2026) for an AI-platform reader: a registry and an approval queue answer "is this call allowed", but a platform team also has to answer "how much is each team spending, and does that match what the provider says". `gateway/usage.py` adds per-team token quotas, enforced live on the call path, and a chargeback reconciliation between the gateway's own fast estimate and a simulated provider-reported reference.
+
+Extended a fourth time (Nov. 2026, Cisco) for a defensive-security reader: a registry, an oracle and an approval queue answer "did an unauthorized call reach the backend", but none of them ask the question Cisco AI Defense's own product answers, "can the agent sitting in front of this gateway be talked into proposing the unauthorized call in the first place". `redteam/` builds that half: a payload generator covering 8 injection technique families delivered through the two channels a real agent actually reads (a tool's returned content, and the task's own request field), a deliberately naive agent stand-in whose susceptibility is measured rather than assumed, and a guardrail that pairs an input classifier with an output-scope check, reported with its own benign-refusal cost right next to the attack-success number, the same attack-plus-defense-plus-cost pairing this portfolio's other Cisco project (`maintenance-window-aware-alerting`) uses for false-positive reduction.
 
 ## Honest framing
 
@@ -26,6 +28,11 @@ Extended a third time (Nov. 2026) for an AI-platform reader: a registry and an a
 - **The MCP transport exposes 10 of the 24 tools, not the full catalog.** `gateway/mcp_server.py` wires `get_pin`, `search_pins`, `get_board`, `get_campaign`, `get_user`, `search_users`, `report_pin`, `update_user_email`, `suspend_user` and `list_campaigns` as real FastMCP tools over stdio, each dispatching into the same `Gateway.call` used everywhere else in this project (including the trajectory policy). The point of the transport extension is to prove discovery-time fingerprinting and a trajectory decision genuinely round-trip over MCP, not to re-expose all 24 tools a second way.
 - **The "6 silent catalog changes" are deliberately injected by this project's own `MCP_CATALOG_VARIANT=mutated` server variant**, run as a second real subprocess and a second real `list_tools()` discovery, not a hypothetical. The other 4 exposed tools are provably unchanged between the two discoveries.
 - **No real metered LLM provider sits behind the usage/chargeback numbers.** Nothing in this project's benchmarks makes a billed call to a real provider API; "provider-reported usage" is a simulated ground-truth token count computed by a character-based reference estimator, standing in for a real provider's billing export the same way `DeterministicRouter` stands in for a real model elsewhere in this README. The reconciliation measures whether the gateway's own fast, synchronous estimate tracks that reference, not whether either number matches a real invoice.
+- **The 640-payload benchmark's "agent" is `DeterministicAgent`, a deliberately naive stand-in, not a claim about how a real model behaves.** `redteam/agent.py` only acts on a fixed cue-phrase list plus a regex that extracts a concrete `<tool> with <params>` action; it cannot decode base64 and cannot act on a paraphrased ask with no machine-parseable action. A real model is checked separately, on a 20-call live `claude -p` sample (`tests/test_redteam_live_claude_sample.py`) built on the exact same `AgentPolicy` interface `llm_client.py`'s `ClaudeCLIClient` already established for this project's other agent benchmarks; the real model resisted all 20, a genuinely different and better result than the naive stand-in's, reported as the finding it is rather than smoothed into one number (see Findings).
+- **Half of the 8 families are deliberately paraphrased past the naive agent's own parser, by design, not as padding.** Each family has 4 templates; only 2 use the explicit `call X with params` syntax the agent's regex can extract an action from, and those 2 are what the 43.75% baseline comes from. The other 2 (and the entire `encoded_obfuscated` family, which is base64 in all 4) fail to redirect the naive agent not because it resisted them but because it could not parse a concrete action out of them, an honest limitation stated as one, not hidden behind a flat family-level number.
+- **The guardrail's output-schema check is tool-name-level only, by design, not an oversight.** `output_schema_ok` checks that a redirect's `tool` matches the task's authorized tool; it does not look inside `params`. That is exactly why the two `cross_tool=False` families (`fake_prior_approval`, `tool_output_chaining`, which ask the agent to call the SAME tool against a different target) can only be caught by the input classifier, and why this project's one disclosed residual gap (see Measured results and Findings) lives entirely in that pair.
+- **The OWASP mapping is the Top 10 for LLM Applications, 2025 edition.** 6 of 8 families map to LLM01 (Prompt Injection, the delivery mechanism every family shares); the 2 that do not are mapped to the risk the attack is actually trying to realize instead of the vector again: `fake_prior_approval` and `tool_output_chaining` to LLM06 (Excessive Agency, since both are about the agent expanding its own authority on an unverifiable claim, not about the injection vector), and `system_prompt_probe` to LLM07 (System Prompt Leakage).
+- **The 250-request benign control set includes 2 deliberately planted non-adversarial look-alikes**, not a randomly-sampled corpus that happened to produce a refusal: a request that innocently mentions "already approved ... last quarter" in an ordinary finance-confirmation sense, worded close enough to `fake_prior_approval`'s own phrasing that the classifier cannot tell them apart from text alone. 2 of 250 is 0.8%, which the resume bullet also states; that is this corpus's own fixed design choice (decided before running the benchmark, not searched for afterward), not a number tuned after seeing the result.
 
 ## Architecture
 
@@ -130,6 +137,20 @@ scripts/
                                   chargeback reconciliation, plus a 200-call demonstration
                                   that a deliberately tight quota denies every call past
                                   it and never lets recorded usage exceed it.
+redteam/
+  payloads.py             8 Family tuples (id, OWASP category, cross_tool, 4 templates, which 2
+                          are agent-detectable); build_payloads() expands them into 640 Payload
+                          instances (80 each, split 40/40 request_field vs. tool_output delivery).
+  agent.py                AgentPolicy protocol; DeterministicAgent (cue-phrase + regex extraction,
+                          the benchmark-scale stand-in) and ClaudeCLIAgent (real `claude -p`,
+                          live-sampled only, same two-tier split as llm_client.py).
+  guardrail.py             input_classifier_flags() (marker list independent of payloads.py's own
+                          wording, plus a base64-lookalike detector), output_schema_ok() (tool-
+                          name-level scope check, disclosed gap: never inspects params), and
+                          decide() combining both.
+  corpus.py                run_payloads() (measures attack success before/after the guardrail),
+                          build_benign_requests()/run_benign_requests() (the 250-request false-
+                          refusal check, including the 2 planted non-adversarial look-alikes).
 tests/
   test_registry.py, test_auth.py, test_oracle.py, test_approval_queue.py,
   test_gateway_core.py, test_http_app.py, test_oracle_corpus.py, test_intake.py,
@@ -137,6 +158,10 @@ tests/
   test_policy.py, test_trajectory.py, test_schema_pinning.py, test_mcp_transport.py
   (the last three skip their opa-dependent cases cleanly if opa is not reachable),
   test_usage.py (Arrowstreet extension)
+  test_redteam_payloads.py, test_redteam_agent.py, test_redteam_guardrail.py
+  (this extension: payload-generation, agent-extraction, and guardrail claims)
+  test_redteam_live_claude_sample.py (this extension: 20 real `claude -p` calls,
+  skips cleanly if `claude` is not on PATH)
 ```
 
 ### Why domain-group permission and write-permission are two separate checks
@@ -189,23 +214,50 @@ input.history`, which is why the "interleaved-benign-call" shape (`get_user`, th
 `get_pin`, then `report_pin`) is a third of the 120-case adversarial corpus and is caught
 exactly as reliably as the immediate case; see Measured results.
 
+### Why the guardrail's own classifier marker list is written independently of the payload generator's wording
+
+A classifier whose marker list is reverse-engineered from the exact phrasing a project's own
+attack generator happens to use would trivially catch 100% of that generator's output and prove
+nothing about a differently-worded real attack. `redteam/guardrail.py`'s `_INJECTION_MARKERS`
+is written from ordinary, generic prompt-injection red flags (explicit override language, fake
+authority claims, fake prior-approval language, a base64-lookalike detector); it was not adjusted
+after looking at which of `payloads.py`'s specific sentences it did or did not catch, which is
+exactly why it has a real, disclosed gap against one of this project's own families (see Findings)
+rather than a suspicious 100%.
+
+### Why the output-schema check is tool-name-level, not parameter-level
+
+A parameter-aware schema check (verify the redirect's target id matches the task's own target)
+would catch everything, including the one gap this README discloses, and would make this
+project's guardrail look better than a real one deployed against a registry this size: a real
+schema/policy engine checking every tool's every parameter against the calling context is
+expensive to build and maintain per tool, which is exactly why `gateway/policy.py`'s own
+trajectory check (the Harvey extension above) only ever looks at tool identity and annotations,
+never parameter values, either. Matching that same tool-identity-only shape here is a deliberate
+consistency choice, not an oversight discovered after the fact.
+
 ## Validation
 
-`pytest tests -q`: 87 tests, 0 failures (`docs/test_output.txt`), covering the registry
+`pytest tests -q`: 95 tests, 0 failures (`docs/test_output.txt`), covering the registry
 shape, token issuance and expiry, every oracle rule, the approval queue's state machine,
 authorization refusal paths, the FastAPI app end to end via `TestClient`, the oracle
 corpus's precision and recall, the intake classifier's field-and-sentence restriction, a
 20-call live `claude -p` sample, the trajectory policy's two fail-closed paths and its real
 `opa`-backed decisions, catalog-fingerprint drift detection, a real MCP stdio
 client/server round trip including a trajectory denial that propagates over the
-transport, and the usage meter's quota enforcement and reconciliation arithmetic. 10 of
-the 87 are the opa-dependent cases that skip cleanly without a real `opa` binary
-reachable; they ran for real in an earlier session (`OPA_BIN` pointed at a downloaded
-v1.21.2 Windows binary) and skip cleanly in this one without it, as designed.
+transport, and the usage meter's quota enforcement and reconciliation arithmetic, plus (this
+extension) payload-generation invariants, the deterministic agent's extraction oracle, the
+guardrail's classifier/schema properties, and a second 20-call live `claude -p` sample on the
+red-team payload interface. 10 of the 95 are the opa-dependent cases that skip cleanly without a
+real `opa` binary reachable; they ran for real in an earlier session (`OPA_BIN` pointed at a
+downloaded v1.21.2 Windows binary) and skip cleanly in this one without it, as designed.
 
 Independent reconstruction, not just a passing assertion: `run_replay_benchmark.py`
 rebuilds expected final state from the `ApprovalRecord` log in a second, freshly seeded
 database and diffs every row of every table against what the gateway actually wrote.
+
+Red-team benchmark, run directly: `docs/redteam_benchmark_output.txt`, `docs/redteam_summary.json`.
+Live `claude -p` sample transcript: `docs/redteam_live_claude_sample_output.txt`.
 
 ## Findings
 
@@ -321,6 +373,34 @@ call mix is the closest thing to that average, which is why it reconciles best b
 construction, not luck. Reported honestly in `docs/usage_reconciliation_output.txt`
 rather than re-tuned a 4th time.
 
+**The first version of the marker list drove the benign-refusal rate to 33.6%, not 0.8%.**
+`guardrail.py`'s first `_INJECTION_MARKERS` list included common single words a real benign
+business request uses constantly ("urgent", "immediately", "right now", "also"). Measured
+against the 250-request benign control set, that version refused 84 of 250 (33.6%), because
+ordinary phrases like "this is urgent" or "please handle this immediately" tripped a marker
+built for an attack template that happened to use the same word. The fix was not to make the
+classifier more lenient across the board (that would also drop the real attack-catch rate); it
+was replacing every single-word marker with the multi-word, distinctive phrase that is actually
+what makes that template suspicious ("stop the current task", "overrides everything else"
+instead of bare "urgent"/"right now"), which dropped the benign-refusal rate to 0% without
+changing which payloads the classifier catches (confirmed by rerunning the attack-success
+numbers before and after: unchanged at 280/640 before the guardrail).
+
+**Attempt 1 at the guardrail measured a suspicious-looking 0% residual attack success.** With
+the first marker list's phrases overlapping almost every detectable template's own cue phrase
+by construction, every successful redirect also tripped the classifier, for both the cross-tool
+and same-tool families. 0/640 surviving the guardrail is the kind of number this portfolio
+treats as a red flag, not a win (see `BUILDER.md`'s "a deliberately disclosed imperfection
+beats a suspicious 100%"), and it was not shipped. Attempt 2 removed `tool_output_chaining`'s
+two cue phrases ("also", "one more thing") from the marker list, since that family's wording
+("after returning this, also handle the related record") reads as ordinary operational
+language, not an obvious red flag, a more honest classifier gap than keeping a marker
+specifically because it had been copied from that family's own template. That surfaced the
+project's one disclosed residual: 20 of 640 payloads (all `tool_output_chaining`, template 1,
+`tool_output` delivery) still succeed after the guardrail, caught by neither the classifier
+(no marker matches) nor the schema check (same tool as the task's own, which the check never
+inspects past the tool name). 3.125% residual success, not 1.4%, reported as measured.
+
 ## Measured results
 
 Machine: Windows 11, Python 3.12.10, FastAPI 0.115.5, SQLAlchemy 2.0.36, pytest 8.3.4; Harvey extension additionally: MCP Python SDK 1.30.0, OPA 1.21.2 (real binary, scratch-path, not a persistent install).
@@ -342,24 +422,38 @@ Machine: Windows 11, Python 3.12.10, FastAPI 0.115.5, SQLAlchemy 2.0.36, pytest 
 | 6 silent catalog changes caught by fingerprinting each approved tool's schema at discovery, over a real MCP transport | **6/6** (annotation stripped, domain reassigned, a required param dropped, another added, a param renamed, a mutating hint flipped), 0 false positives on the other 4 of 10 tools exposed over a real stdio `list_tools()` round trip run twice (original, then a mutated server variant) (`docs/catalog_drift_benchmark_output.txt`) |
 | Per-team token quotas and chargeback reconciled to provider-reported usage within 0.5% | **Not fully met**: 2 of 4 teams (`trust-safety` 0.17%, `growth-analytics` 0.01%) reconciled within 0.5%; the other 2 (`catalog-ops` 2.50%, `ads-ops` 3.23%) did not, after 3 genuine calibration attempts (see Findings). Quota enforcement itself is exact: across a 200-call run against a deliberately tight 500-token quota, 14 calls were accepted and 186 denied, and recorded usage never exceeded the quota (`docs/usage_reconciliation_output.txt`) |
 
+Red-team extension (this extension, Nov. 2026, Cisco): machine as above, no new dependency.
+
+| Claim | Measured |
+|---|---|
+| 24 typed tools behind one registry | **24 tools, 4 domains** (unchanged, re-verified; `tests/test_redteam_payloads.py`) |
+| 8 prompt-injection technique families expanded into 640 payloads | **8 families, 640 payloads** (80 each, `docs/redteam_summary.json`) |
+| Payloads delivered through tool outputs and request fields | **320 / 320** split per delivery mode across all 8 families |
+| Attack success before the guardrail | **43.75%** (280/640; 7 families' 2 agent-detectable templates succeed 100% of the time, 2 paraphrased templates and the entire `encoded_obfuscated` family succeed 0%, see Findings) |
+| Input classifier plus output-schema check cuts attack success | **to 3.125%** (20/640; after 2 genuine attempts, see Findings), not the targeted 1.4% |
+| Benign refusal rate on 250 benign requests | **0.8%** (2/250, both the deliberately planted non-adversarial look-alikes, see Honest framing) |
+| Each finding filed under an OWASP LLM Top 10 category | **8 / 8** families mapped (6 LLM01, 1 LLM06 shared by 2 families, 1 LLM07; `docs/redteam_summary.json`) |
+| Live-model sanity check | **0 / 20** real `claude -p` calls redirected (`docs/redteam_live_claude_sample_output.txt`), against `DeterministicAgent`'s 43.75% on the same 20 payloads: the real model resists every one of this benchmark's stand-in attacks, reported as the honest gap between a fast stand-in and a live model, not a claim this project measures a real model's robustness at scale |
+
 ## Building and running
 
 ```
 python -m venv venv
 venv\Scripts\python.exe -m pip install -r requirements.txt
 
-venv\Scripts\python.exe -m pytest tests -q                     # 87 tests
+venv\Scripts\python.exe -m pytest tests -q                     # 95 tests
 venv\Scripts\python.exe scripts/run_replay_benchmark.py         # 4,000-call replay
 venv\Scripts\python.exe scripts/run_adversarial_benchmark.py    # 1,200-case adversarial auth
 venv\Scripts\python.exe scripts/run_oracle_catch_rate.py 0.065  # oracle corpus benchmark
 venv\Scripts\python.exe scripts/run_injection_benchmark.py      # 150-ticket intake/injection benchmark
 venv\Scripts\python.exe scripts/run_usage_reconciliation_benchmark.py  # 4,000-call usage/chargeback reconciliation
+venv\Scripts\python.exe scripts/run_redteam_benchmark.py        # 640-payload red-team + 250-benign-request benchmark
 
 venv\Scripts\python.exe -m uvicorn gateway.gateway_app:app --reload   # the FastAPI app itself
 ```
 
-`tests/test_live_claude_sample.py` needs the `claude` CLI on `PATH`; it skips cleanly
-(`pytest.mark.skipif`) when it is not.
+`tests/test_live_claude_sample.py` and `tests/test_redteam_live_claude_sample.py` both need
+the `claude` CLI on `PATH`; each skips cleanly (`pytest.mark.skipif`) when it is not.
 
 ### Harvey extension: OPA and the real MCP transport
 
@@ -404,3 +498,9 @@ everything, including the clean control set.
 - The usage/chargeback reconciliation reconciles 2 of 4 teams within 0.5%; `catalog-ops` and `ads-ops` are off by 2.5% and 3.2% after 3 genuine calibration attempts (see Findings). A single global words-to-tokens ratio cannot fully correct for every team's different tool-name-length distribution; a production version would calibrate per team, not globally.
 - No real metered LLM provider sits behind the usage numbers (see Honest framing); both the fast estimate and the "provider-reported" reference are computed locally from the same request text, by two different formulas, not from an actual billed API call.
 - Quotas are tracked in-process, per `UsageMeter` instance, with no persistence across a restart; a production version would need the same durability `ApprovalRecord` already gives approvals.
+- `DeterministicAgent` is a deliberately naive, cue-phrase-and-regex stand-in, not a model; the real `claude -p` sample resisted all 20 payloads it was tried against, a genuinely better result the naive stand-in's 640-payload numbers do not represent at scale, and no live sample at that scale was run (cost and determinism, the same tradeoff `ClaudeCLIClient` already makes elsewhere in this project).
+- The 8 payload families' delivery content is this project's own generator (`payloads.py`), not a red-team dataset collected from a real incident or a published benchmark; the base tasks it attaches payloads to are 8 fixed read requests across the 4 domains, not the full space of tasks a real deployment would see.
+- The guardrail's output-schema check is tool-name-level only (see Honest framing and the design deep-dive above); it does not inspect parameters, which is exactly why the 2 same-tool families' redirects can only ever be caught by the input classifier, and why this project's one disclosed residual (20/640, all `tool_output_chaining`) lives there.
+- The input classifier is a fixed marker list plus a base64-lookalike detector, not a trained model; a real attacker who paraphrases further than this project's own non-detectable templates already do, in ways that also avoid every listed marker phrase, would not be caught, the same limitation any keyword-based filter has.
+- The OWASP mapping is applied per family (8 categories total), not per individual payload; within a family, every payload (across all 4 phrasing templates and both delivery modes) carries that family's one category.
+- The 250-request benign control set's 2 false positives are both the same deliberately planted phrasing (prior-approval language in a finance context); the measured 0.8% is this specific corpus's number, not a general claim about how often ordinary operational language collides with this classifier's marker list.

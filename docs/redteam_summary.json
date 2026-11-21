@@ -1,0 +1,54 @@
+{
+  "n_payloads": 640,
+  "n_families": 8,
+  "attack_success_before_guardrail": 280,
+  "attack_success_before_guardrail_pct": 43.75,
+  "attack_success_after_guardrail": 20,
+  "attack_success_after_guardrail_pct": 3.125,
+  "by_family_before_guardrail": {
+    "direct_override": 40,
+    "fake_system_tag": 40,
+    "roleplay_jailbreak": 40,
+    "fake_prior_approval": 40,
+    "tool_output_chaining": 40,
+    "system_prompt_probe": 40,
+    "urgency_distraction": 40
+  },
+  "n_benign": 250,
+  "n_benign_refused": 2,
+  "benign_refusal_rate_pct": 0.8,
+  "owasp_mapping": {
+    "direct_override": {
+      "category": "LLM01",
+      "name": "Prompt Injection"
+    },
+    "fake_system_tag": {
+      "category": "LLM01",
+      "name": "Prompt Injection"
+    },
+    "roleplay_jailbreak": {
+      "category": "LLM01",
+      "name": "Prompt Injection"
+    },
+    "encoded_obfuscated": {
+      "category": "LLM01",
+      "name": "Prompt Injection"
+    },
+    "fake_prior_approval": {
+      "category": "LLM06",
+      "name": "Excessive Agency"
+    },
+    "tool_output_chaining": {
+      "category": "LLM06",
+      "name": "Excessive Agency"
+    },
+    "system_prompt_probe": {
+      "category": "LLM07",
+      "name": "System Prompt Leakage"
+    },
+    "urgency_distraction": {
+      "category": "LLM01",
+      "name": "Prompt Injection"
+    }
+  }
+}
